@@ -6,6 +6,7 @@ import logging
 
 from PySide6.QtCore import (
     QModelIndex,
+    QObject,
     QSortFilterProxyModel,
     Qt,
     Signal,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QTableView,
     QMenu,
+    QWidget,
 )
 
 from logcat_viewer.parser import (
@@ -26,20 +28,10 @@ from logcat_viewer.parser import (
     COL_TID,
     COL_APPLICATION,
     COL_PROCESS,
+    LEVEL_ABBREV,
 )
 
 logger = logging.getLogger(__name__)
-
-
-LEVEL_ABBREV = {
-    "VERBOSE": "V",
-    "DEBUG":   "D",
-    "INFO":    "I",
-    "WARN":    "W",
-    "ERROR":   "E",
-    "FATAL":   "F",
-    "ASSERT":  "S",
-}
 
 
 class LogcatFilterProxy(QSortFilterProxyModel):
@@ -49,7 +41,7 @@ class LogcatFilterProxy(QSortFilterProxyModel):
     Tag/Message 过滤大小写不敏感。
     """
 
-    def __init__(self, parent: object = None) -> None:
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._level_filter: set[str] = set()
         self._tag_filter: str = ""
@@ -60,9 +52,8 @@ class LogcatFilterProxy(QSortFilterProxyModel):
         self._process_filter: str = ""
         self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.setSortRole(Qt.ItemDataRole.DisplayRole)
-        self.setDynamicSortFilter(True)
+        self.setDynamicSortFilter(False)
 
-    # ── 过滤条件设置 ───────────────────────────────────────────────────────
     def apply_filters(self, filters: dict) -> None:
         """一次应用所有过滤条件。
 
@@ -70,13 +61,44 @@ class LogcatFilterProxy(QSortFilterProxyModel):
             filters: FilterBar.current_filters() 返回的字典。
         """
         self._level_filter = filters.get("levels", set())
-        self._tag_filter = filters.get("tag", "")
-        self._message_filter = filters.get("message", "")
+        self._tag_filter = filters.get("tag", "").lower()
+        self._message_filter = filters.get("message", "").lower()
         self._pid_filter = filters.get("pid", "")
         self._tid_filter = filters.get("tid", "")
-        self._application_filter = filters.get("application", "")
-        self._process_filter = filters.get("process", "")
+        self._application_filter = filters.get("application", "").lower()
+        self._process_filter = filters.get("process", "").lower()
+        
+        logger.info(f"应用过滤条件: levels={self._level_filter}, tag='{self._tag_filter}', "
+                    f"msg='{self._message_filter}', pid='{self._pid_filter}', tid='{self._tid_filter}'")
+        
         self.invalidateFilter()
+        
+        is_reset = (
+            not self._tag_filter
+            and not self._message_filter
+            and not self._pid_filter
+            and not self._tid_filter
+            and not self._application_filter
+            and not self._process_filter
+        )
+        if is_reset:
+            self.sort(0, Qt.SortOrder.AscendingOrder)
+        
+        visible = self.rowCount()
+        total = self.sourceModel().rowCount() if self.sourceModel() else 0
+        logger.info(f"过滤结果: {visible}/{total} 条")
+
+    def reset_filter(self) -> None:
+        """重置过滤器并刷新视图。"""
+        self._level_filter = set()
+        self._tag_filter = ""
+        self._message_filter = ""
+        self._pid_filter = ""
+        self._tid_filter = ""
+        self._application_filter = ""
+        self._process_filter = ""
+        self.invalidateFilter()
+        self.sort(0, Qt.SortOrder.AscendingOrder)
 
     def filterAcceptsRow(
         self, source_row: int, source_parent: QModelIndex
@@ -85,54 +107,47 @@ class LogcatFilterProxy(QSortFilterProxyModel):
         if model is None:
             return True
 
-        # Level 过滤
         if self._level_filter:
             idx = model.index(source_row, COL_LEVEL)
             level = str(model.data(idx, Qt.ItemDataRole.DisplayRole) or "").upper().strip()
-            abbrev = LEVEL_ABBREV.get(level, level[0] if level else "")
+            abbrev = LEVEL_ABBREV.get(level, level[0] if len(level) > 0 else "")
             if abbrev not in self._level_filter and level not in self._level_filter:
                 return False
 
-        # Tag 过滤（不区分大小写）
         if self._tag_filter:
             idx = model.index(source_row, COL_TAG)
             tag = (model.data(idx, Qt.ItemDataRole.DisplayRole) or "").lower()
-            if self._tag_filter.lower() not in tag:
+            if self._tag_filter not in tag:
                 return False
 
-        # Message 过滤
         if self._message_filter:
             idx = model.index(source_row, COL_MESSAGE)
             msg = (model.data(idx, Qt.ItemDataRole.DisplayRole) or "").lower()
-            if self._message_filter.lower() not in msg:
+            if self._message_filter not in msg:
                 return False
 
-        # PID 过滤
         if self._pid_filter:
             idx = model.index(source_row, COL_PID)
             pid = str(model.data(idx, Qt.ItemDataRole.DisplayRole) or "")
             if self._pid_filter not in pid:
                 return False
 
-        # TID 过滤
         if self._tid_filter:
             idx = model.index(source_row, COL_TID)
             tid = str(model.data(idx, Qt.ItemDataRole.DisplayRole) or "")
             if self._tid_filter not in tid:
                 return False
 
-        # Application 过滤
         if self._application_filter:
             idx = model.index(source_row, COL_APPLICATION)
             app = (model.data(idx, Qt.ItemDataRole.DisplayRole) or "").lower()
-            if self._application_filter.lower() not in app:
+            if self._application_filter not in app:
                 return False
 
-        # Process 过滤
         if self._process_filter:
             idx = model.index(source_row, COL_PROCESS)
             proc = (model.data(idx, Qt.ItemDataRole.DisplayRole) or "").lower()
-            if self._process_filter.lower() not in proc:
+            if self._process_filter not in proc:
                 return False
 
         return True
@@ -154,13 +169,12 @@ class LogTableView(QTableView):
 
     row_selected = Signal(int)
 
-    def __init__(self, parent: object = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._proxy = LogcatFilterProxy(self)
         self.setModel(self._proxy)
         self._setup_ui()
 
-    # ── 公共属性 ──────────────────────────────────────────────────────────
     @property
     def proxy_model(self) -> LogcatFilterProxy:
         return self._proxy
@@ -168,6 +182,24 @@ class LogTableView(QTableView):
     def apply_filters(self, filters: dict) -> None:
         """应用过滤条件。"""
         self._proxy.apply_filters(filters)
+        is_reset = (
+            not filters.get("tag", "")
+            and not filters.get("message", "")
+            and not filters.get("pid", "")
+            and not filters.get("tid", "")
+            and not filters.get("application", "")
+            and not filters.get("process", "")
+        )
+        if is_reset:
+            self.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        self.scrollToTop()
+        self.viewport().update()
+
+    def reset_filter(self) -> None:
+        """重置过滤器并刷新视图。"""
+        self._proxy.reset_filter()
+        self.scrollToTop()
+        self.viewport().update()
 
     def set_source_model(self, model) -> None:
         """设置源数据模型。"""

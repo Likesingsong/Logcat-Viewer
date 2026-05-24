@@ -14,11 +14,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 from pathlib import Path
 
 from logcat_viewer import __version__
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +43,7 @@ def _check_pyside6() -> None:
 
 def run_cli(input_path: str, output_path: str | None) -> None:
     """命令行模式：直接导出 Excel，不启动 GUI。"""
-    from logcat_viewer.parser import read_logcat_json
+    from logcat_viewer.parser import read_logcat
     from logcat_viewer.exporter import export_excel
     from logcat_viewer.utils import format_count
 
@@ -49,7 +55,7 @@ def run_cli(input_path: str, output_path: str | None) -> None:
 
     logger.info(f"CLI 模式: 解析 {input_path}")
     print(f"📖 解析 {input_path} ...")
-    metadata, entries = read_logcat_json(input_path)
+    metadata, entries = read_logcat(input_path)
 
     if not entries:
         logger.warning("未解析到任何日志条目")
@@ -68,7 +74,7 @@ def run_gui(open_file: str | None = None) -> None:
     logger.info("启动 GUI 模式")
 
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import Qt, QTimer
     from logcat_viewer.widgets.main_window import MainWindow
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -83,6 +89,24 @@ def run_gui(open_file: str | None = None) -> None:
     window = MainWindow(open_file=open_file)
     window.show()
     logger.info("GUI 窗口已显示")
+
+    def handle_sigint(*args):
+        logger.info("收到 SIGINT 信号，正在关闭...")
+        window.close()
+        QTimer.singleShot(100, app.quit)
+
+    def handle_sigtstp(*args):
+        logger.info("收到 SIGTSTP 信号，正在关闭...")
+        window.close()
+        QTimer.singleShot(100, app.quit)
+
+    signal.signal(signal.SIGINT, handle_sigint)
+    if hasattr(signal, "SIGTSTP"):
+        signal.signal(signal.SIGTSTP, handle_sigtstp)
+
+    timer = QTimer()  # 保持 Qt 事件循环活跃，确保 Unix 信号能被处理
+    timer.start(200)
+    timer.timeout.connect(lambda: None)
 
     sys.exit(app.exec())
 

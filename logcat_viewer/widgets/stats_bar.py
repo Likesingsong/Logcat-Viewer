@@ -72,11 +72,8 @@ class StatsBar(QWidget):
             level_counts: 各级别计数字典，如 {"I": 123, "E": 5}。
         """
         self._total_label.setText(f"共 {format_count(total)} 条")
-        if visible != total:
-            self._visible_label.setText(f"显示 {format_count(visible)} 条")
-            self._visible_label.setVisible(True)
-        else:
-            self._visible_label.setVisible(False)
+        self._visible_label.setText(f"显示 {format_count(visible)} 条")
+        self._visible_label.setVisible(True)
 
         counts = level_counts or {}
         for lv in self._LEVEL_ORDER:

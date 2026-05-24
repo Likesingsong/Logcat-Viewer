@@ -33,8 +33,8 @@ class LogcatTableModel(QAbstractTableModel):
         super().__init__(parent)
         self._entries: list[dict[str, Any]] = []
         self._metadata: dict[str, Any] = {}
+        self._level_counts: dict[str, int] = {}
 
-    # ── 公共属性 ──────────────────────────────────────────────────────────
     @property
     def entries(self) -> list[dict[str, Any]]:
         return self._entries
@@ -47,18 +47,22 @@ class LogcatTableModel(QAbstractTableModel):
     def entry_count(self) -> int:
         return len(self._entries)
 
+    @property
+    def level_counts(self) -> dict[str, int]:
+        return self._level_counts
+
     def get_entry(self, row: int) -> dict[str, Any] | None:
         """返回指定行的条目，越界返回 None。"""
         if 0 <= row < len(self._entries):
             return self._entries[row]
         return None
 
-    # ── 数据加载 ──────────────────────────────────────────────────────────
     def load_data(self, metadata: dict[str, Any], entries: list[dict[str, Any]]) -> None:
         """加载新数据，替换现有数据并通知视图刷新。"""
         self.beginResetModel()
         self._metadata = metadata
         self._entries = entries
+        self._level_counts = self._compute_level_counts(entries)
         self.endResetModel()
 
     def clear(self) -> None:
@@ -66,7 +70,18 @@ class LogcatTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._metadata = {}
         self._entries = []
+        self._level_counts = {}
         self.endResetModel()
+
+    @staticmethod
+    def _compute_level_counts(entries: list[dict[str, Any]]) -> dict[str, int]:
+        """预先计算各级别日志数量。"""
+        counts: dict[str, int] = {}
+        for entry in entries:
+            lv = str(entry.get("level", "")).upper().strip()
+            if lv:
+                counts[lv] = counts.get(lv, 0) + 1
+        return counts
 
     # ── QAbstractTableModel 接口 ─────────────────────────────────────────
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:

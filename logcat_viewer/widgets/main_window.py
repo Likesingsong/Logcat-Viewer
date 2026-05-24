@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from logcat_viewer.parser import read_logcat_json, ParseError
+from logcat_viewer.parser import read_logcat, ParseError
 from logcat_viewer.exporter import export_excel, ExportError
 from logcat_viewer.models.logcat_model import LogcatTableModel
 from logcat_viewer.widgets.filter_bar import FilterBar
@@ -53,7 +53,7 @@ class _ParseWorker(QThread):
 
     def run(self) -> None:
         try:
-            metadata, entries = read_logcat_json(self._filepath)
+            metadata, entries = read_logcat(self._filepath)
             self.finished.emit(metadata, entries)
         except Exception as exc:
             self.error.emit(str(exc))
@@ -95,12 +95,15 @@ class MainWindow(QMainWindow):
         self._dark_mode = False
         self._worker: _ParseWorker | None = None
         self._export_worker: _ExportWorker | None = None
+        self._progress: QProgressDialog | None = None
+        self._export_progress: QProgressDialog | None = None
 
         self._setup_ui()
         self._connect_signals()
         self._apply_theme()
 
-        # 启动时打开命令行指定的文件
+        QTimer.singleShot(0, self._filter_bar._do_emit_filters)
+
         if open_file:
             QTimer.singleShot(100, lambda: self._open_file(open_file))
 
@@ -239,15 +242,28 @@ class MainWindow(QMainWindow):
 
     def _on_parse_done(self, metadata: dict, entries: list[dict]) -> None:
         """解析完成回调。"""
-        self._progress.close()
+        if self._progress:
+            self._progress.close()
         logger.info(f"解析完成: {len(entries)} 条日志")
 
-        filepath = self._worker._filepath if self._worker else ""
-        self._worker = None
+        filepath = ""
+        if self._worker:
+            filepath = self._worker._filepath
+            try:
+                self._worker.finished.disconnect()
+                self._worker.error.disconnect()
+            except RuntimeError:
+                pass
+            self._worker.deleteLater()
+            self._worker = None
 
         self._model.load_data(metadata, entries)
         self._device_panel.load_metadata(metadata)
         self._detail_panel.clear()
+        
+        self._table.proxy_model.sort(0, Qt.SortOrder.AscendingOrder)
+        self._table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        
         self._filter_bar.reset()
 
         self._current_file = filepath
@@ -259,8 +275,16 @@ class MainWindow(QMainWindow):
 
     def _on_parse_error(self, error_msg: str) -> None:
         """解析错误回调。"""
-        self._progress.close()
-        self._worker = None
+        if self._progress:
+            self._progress.close()
+        if self._worker:
+            try:
+                self._worker.finished.disconnect()
+                self._worker.error.disconnect()
+            except RuntimeError:
+                pass
+            self._worker.deleteLater()
+            self._worker = None
         logger.error(f"解析错误: {error_msg}")
         QMessageBox.critical(self, "解析错误", error_msg)
 
@@ -295,21 +319,55 @@ class MainWindow(QMainWindow):
         self._export_worker.start()
 
     def _on_export_done(self, output_path: str) -> None:
-        self._export_progress.close()
-        self._export_worker = None
+        if self._export_progress:
+            self._export_progress.close()
+        if self._export_worker:
+            try:
+                self._export_worker.finished.disconnect()
+                self._export_worker.error.disconnect()
+            except RuntimeError:
+                pass
+            self._export_worker.deleteLater()
+            self._export_worker = None
         QMessageBox.information(
             self, "导出成功",
             f"已导出 {format_count(self._model.entry_count)} 条日志 →\n{output_path}",
         )
 
     def _on_export_error(self, error_msg: str) -> None:
-        self._export_progress.close()
-        self._export_worker = None
+        if self._export_progress:
+            self._export_progress.close()
+        if self._export_worker:
+            try:
+                self._export_worker.finished.disconnect()
+                self._export_worker.error.disconnect()
+            except RuntimeError:
+                pass
+            self._export_worker.deleteLater()
+            self._export_worker = None
         QMessageBox.critical(self, "导出错误", error_msg)
 
     # ── 过滤 ──────────────────────────────────────────────────────────────
     def _on_filters_changed(self, filters: dict) -> None:
+        """应用过滤条件，显示进度。"""
+        total = self._model.entry_count
+        if total < 1000:
+            self._table.apply_filters(filters)
+            self._update_stats()
+            return
+
+        progress = QProgressDialog("正在过滤日志...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setWindowTitle("搜索")
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
+        QApplication.processEvents()
+
         self._table.apply_filters(filters)
+        self._update_stats()
+
+        progress.close()
 
     def _on_row_selected(self, row: int) -> None:
         entry = self._model.get_entry(row)
@@ -319,15 +377,9 @@ class MainWindow(QMainWindow):
         """更新统计栏。"""
         total = self._model.entry_count
         visible = self._table.proxy_model.rowCount()
+        logger.info(f"更新统计栏: 总数={total}, 可见={visible}")
 
-        # 计算各级别总数
-        level_counts: dict[str, int] = {}
-        for entry in self._model.entries:
-            lv = str(entry.get("level", "")).upper().strip()
-            if lv:
-                level_counts[lv] = level_counts.get(lv, 0) + 1
-
-        self._stats_bar.update_stats(total, visible, level_counts)
+        self._stats_bar.update_stats(total, visible, self._model.level_counts)
         if self._current_file:
             path = Path(self._current_file)
             self._file_label.setText(f" {path.name}  ({format_count(total)} 条)")
@@ -366,10 +418,18 @@ class MainWindow(QMainWindow):
 
     # ── 窗口关闭 ──────────────────────────────────────────────────────────
     def closeEvent(self, event) -> None:
-        if self._worker and self._worker.isRunning():
-            self._worker.quit()
-            self._worker.wait(2000)
-        if self._export_worker and self._export_worker.isRunning():
-            self._export_worker.quit()
-            self._export_worker.wait(2000)
+        for worker_attr in ("_worker", "_export_worker"):
+            worker = getattr(self, worker_attr, None)
+            if worker and worker.isRunning():
+                worker.quit()
+                if not worker.wait(1000):
+                    worker.terminate()
+                    worker.wait()
+                try:
+                    worker.finished.disconnect()
+                    worker.error.disconnect()
+                except RuntimeError:
+                    pass
+                worker.deleteLater()
+                setattr(self, worker_attr, None)
         super().closeEvent(event)

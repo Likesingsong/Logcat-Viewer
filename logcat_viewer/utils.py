@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import platform
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 # ── 平台检测 ────────────────────────────────────────────────────────────────
@@ -225,7 +228,7 @@ def get_dark_theme() -> str:
 
 
 # ── 文件对话框过滤器 ────────────────────────────────────────────────────────
-LOGCAT_FILE_FILTER = "Logcat 文件 (*.logcat *.json);;所有文件 (*)"
+LOGCAT_FILE_FILTER = "Logcat 文件 (*.logcat *.json *.txt *.log *.new-log);;所有文件 (*)"
 
 
 # ── 辅助函数 ────────────────────────────────────────────────────────────────
@@ -249,8 +252,8 @@ def detect_system_theme() -> str:
             )
             if result.returncode == 0 and "Dark" in result.stdout:
                 return "dark"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"检测 macOS 主题失败: {e}")
     elif is_windows():
         try:
             import winreg
@@ -262,8 +265,8 @@ def detect_system_theme() -> str:
             winreg.CloseKey(key)
             if value == 0:
                 return "dark"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"检测 Windows 主题失败: {e}")
     elif is_linux():
         try:
             import subprocess
@@ -273,6 +276,6 @@ def detect_system_theme() -> str:
             )
             if "dark" in result.stdout.lower():
                 return "dark"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"检测 Linux 主题失败: {e}")
     return "light"

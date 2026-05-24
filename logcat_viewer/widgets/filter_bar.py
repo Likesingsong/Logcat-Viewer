@@ -1,4 +1,4 @@
-"""过滤栏组件 — 提供日志级别、Tag、Message、PID/TID 的实时过滤."""
+"""过滤栏组件 — 提供日志级别、Tag、Message、PID/TID 的过滤."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QWidget,
 )
 
@@ -24,9 +25,10 @@ class FilterBar(QWidget):
     - Tag 子串搜索
     - Message 关键词搜索
     - PID / TID 精确或子串匹配
+    - 点击搜索按钮或按回车执行搜索
 
     Signals:
-        filters_changed(dict): 过滤器发生变化时发射，携带所有过滤条件。
+        filters_changed(dict): 点击搜索按钮时发射，携带所有过滤条件。
     """
 
     filters_changed = Signal(dict)
@@ -46,9 +48,7 @@ class FilterBar(QWidget):
         self._pid_edit: QLineEdit | None = None
         self._tid_edit: QLineEdit | None = None
         self._setup_ui()
-        self._emit_filters()
 
-    # ── 公共接口 ────────────────────────────────────────────────────────────
     def current_filters(self) -> dict:
         """返回当前所有过滤条件的字典。"""
         enabled = {lv for lv, cb in self._checkboxes.items() if cb.isChecked()}
@@ -64,6 +64,7 @@ class FilterBar(QWidget):
 
     def reset(self) -> None:
         """重置所有过滤器到默认状态（全选，搜索框清空）。"""
+        self.blockSignals(True)
         for cb in self._checkboxes.values():
             cb.setChecked(True)
         if self._tag_edit:
@@ -74,64 +75,72 @@ class FilterBar(QWidget):
             self._pid_edit.clear()
         if self._tid_edit:
             self._tid_edit.clear()
-        self._emit_filters()
+        self.blockSignals(False)
+        self._do_emit_filters()
 
-    # ── UI 构建 ─────────────────────────────────────────────────────────────
     def _setup_ui(self) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
 
-        # --- Level 复选框 ---
         layout.addWidget(QLabel("Level:"))
         for lv in self.LEVELS:
             cb = QCheckBox(lv)
             cb.setChecked(True)
             cb.setToolTip(self.LEVEL_LABELS.get(lv, lv))
-            cb.toggled.connect(self._emit_filters)
+            cb.toggled.connect(self._do_emit_filters)
             self._checkboxes[lv] = cb
             layout.addWidget(cb)
 
         layout.addSpacing(12)
 
-        # --- Tag 搜索 ---
         layout.addWidget(QLabel("Tag:"))
         self._tag_edit = QLineEdit()
         self._tag_edit.setPlaceholderText("搜索 Tag…")
         self._tag_edit.setMaximumWidth(140)
-        self._tag_edit.textChanged.connect(self._emit_filters)
+        self._tag_edit.returnPressed.connect(self._do_emit_filters)
         layout.addWidget(self._tag_edit)
 
-        # --- Message 搜索 ---
         layout.addWidget(QLabel("Msg:"))
         self._msg_edit = QLineEdit()
         self._msg_edit.setPlaceholderText("搜索 Message…")
         self._msg_edit.setMaximumWidth(160)
-        self._msg_edit.textChanged.connect(self._emit_filters)
+        self._msg_edit.returnPressed.connect(self._do_emit_filters)
         layout.addWidget(self._msg_edit)
 
-        # --- PID ---
         layout.addWidget(QLabel("PID:"))
         self._pid_edit = QLineEdit()
         self._pid_edit.setPlaceholderText("PID")
         self._pid_edit.setMaximumWidth(80)
-        self._pid_edit.textChanged.connect(self._emit_filters)
+        self._pid_edit.returnPressed.connect(self._do_emit_filters)
         layout.addWidget(self._pid_edit)
 
-        # --- TID ---
         layout.addWidget(QLabel("TID:"))
         self._tid_edit = QLineEdit()
         self._tid_edit.setPlaceholderText("TID")
         self._tid_edit.setMaximumWidth(80)
-        self._tid_edit.textChanged.connect(self._emit_filters)
+        self._tid_edit.returnPressed.connect(self._do_emit_filters)
         layout.addWidget(self._tid_edit)
+
+        layout.addSpacing(8)
+
+        search_btn = QPushButton("搜索")
+        search_btn.setFixedWidth(60)
+        search_btn.clicked.connect(self._do_emit_filters)
+        layout.addWidget(search_btn)
+
+        reset_btn = QPushButton("重置")
+        reset_btn.setFixedWidth(60)
+        reset_btn.clicked.connect(self.reset)
+        layout.addWidget(reset_btn)
 
         layout.addStretch()
 
-    def _emit_filters(self, _unused: object = None) -> None:
+    def _do_emit_filters(self) -> None:
         """发射 filters_changed 信号。"""
-        # 若所有级别都未选中，则等价于全选（不隐藏所有行）
         filters = self.current_filters()
         if not filters["levels"]:
             filters["levels"] = set(self.LEVELS)
+        logger.info(f"发射过滤条件: levels={filters['levels']}, tag='{filters['tag']}', "
+                    f"msg='{filters['message']}', pid='{filters['pid']}', tid='{filters['tid']}'")
         self.filters_changed.emit(filters)
